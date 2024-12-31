@@ -232,34 +232,86 @@ namespace FudgeCore {
       })();
     }
 
-    public async getAnimation(_index: number): Promise<Animation> {
+    public async getAnimation(_iAnimation: number): Promise<Animation> {
       if (!this.#animations)
         this.#animations = [];
-      if (!this.#animations[_index]) {
-        const animStack: FBX.Object = this.fbx.objects.animStacks[_index];
-        const animNodesFBX: FBX.AnimCurveNode[] = animStack.children[0].children;
-        const animStructure: {
-          children: {
-            [childName: string]: {
-              mtxBoneLocals: {
-                [boneName: string]: AnimationStructureMatrix4x4
-              }
+      if (!this.#animations[_iAnimation]) {
+        const animStack: FBX.Object = this.fbx.objects.animStacks[_iAnimation];
+        const animNodes: FBX.AnimCurveNode[] = animStack.children[0].children;
+        
+        // TODO: maybe refactor this to iterate over channels directly and remove this map
+        const mapiModelToAnimNode: FBX.AnimCurveNode[][] = [];
+        for (const animNode of animNodes) {
+          const target: FBX.Model = animNode.parents.find(parent => parent.type == "Model");
+          if (target?.name == undefined)
+            continue;
+          const iTarget = this.fbx.objects.models.findIndex(model => model.name == target.name);
+          if (!mapiModelToAnimNode[iTarget])
+            mapiModelToAnimNode[iTarget] = [];
+          mapiModelToAnimNode[iTarget].push(animNode);
+        }
+
+        const animationStructure: AnimationStructure = {};
+
+        for (const iModel in mapiModelToAnimNode) {
+          const animNodes: FBX.AnimCurveNode[] = mapiModelToAnimNode[iModel];
+          const model: FBX.Model = this.fbx.objects.models[iModel];
+
+          const path: FBX.Model[] = [];
+          path.push(model);
+          let root: FBX.Model = model;
+          while (true) { // parent of model is set when fbx is loaded
+            const parent: FBX.Model = root.parents.find(parent => parent.type == "Model");
+            if (parent == undefined) break;
+            path.push(parent);
+            root = parent;
+          }
+
+          let currentStructure: AnimationStructure = animationStructure;
+          for (const pathModel of path.reverse()) {
+            if (currentStructure.children == undefined)
+              currentStructure.children = {};
+
+            if ((currentStructure.children as AnimationStructure)[pathModel.name] == undefined)
+              (currentStructure.children as AnimationStructure)[pathModel.name] = {};
+            currentStructure = (currentStructure.children as AnimationStructure)[pathModel.name] as AnimationStructure;
+
+            if (pathModel.subtype == "LimbNode" && model.subtype == "LimbNode") {
+              const mtxBoneLocal: AnimationStructureMatrix4x4 = {};
+              for (const animNode of animNodes)
+                mtxBoneLocal[{
+                  T: "translation",
+                  R: "rotation",
+                  S: "scale"
+                }[animNode.name]] =
+                  await this.getAnimationVector3(animNode, pathModel);
+              if (currentStructure.mtxBoneLocals == undefined)
+                currentStructure.mtxBoneLocals = {};
+              (currentStructure.mtxBoneLocals as { [boneName: string]: AnimationStructureMatrix4x4 })[model.name] = mtxBoneLocal;
+              break;
+            }
+
+            if (pathModel == model) {
+              const mtxLocal: AnimationStructureMatrix4x4 = {};
+              for (const animNode of animNodes)
+                mtxLocal[{
+                  T: "translation",
+                  R: "rotation",
+                  S: "scale"
+                }[animNode.name]] =
+                await this.getAnimationVector3(animNode, pathModel);
+              currentStructure.components = {
+                ComponentTransform: [
+                  { mtxLocal: mtxLocal }
+                ]
+              };
             }
           }
-        } = { children: { "Skeleton0": { mtxBoneLocals: {} } } };
-        for (const animNodeFBX of animNodesFBX) {
-          //if (animNodeFBX.name == "R") continue;
-          const target: FBX.Model = animNodeFBX.parents.find(parent => parent.type != "AnimLayer");
-          (animStructure.children.Skeleton0.mtxBoneLocals[target.name] ||
-            (animStructure.children.Skeleton0.mtxBoneLocals[target.name] = {}))[{
-            T: "translation",
-            R: "rotation",
-            S: "scale"
-          }[animNodeFBX.name]] = this.getAnimationVector3(animNodeFBX, target);
         }
-        this.#animations[_index] = new Animation(animStack.name, animStructure);
+        
+        this.#animations[_iAnimation] = new Animation(animStack.name, animationStructure);
       }
-      return this.#animations[_index];
+      return this.#animations[_iAnimation];
     }
 
     /**
